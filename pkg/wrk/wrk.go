@@ -15,7 +15,7 @@ type Worker struct {
 	lock      sync.RWMutex
 }
 
-var workers map[string]*Worker
+var workers = make(map[string]*Worker)
 
 // Initiate worker with specified name
 func NewWorker(name string) *Worker {
