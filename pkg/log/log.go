@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/getsentry/sentry-go"
@@ -21,9 +22,9 @@ import (
 
 var (
 	std        *logrus.Logger
-	mu         sync.RWMutex
+	mu         sync.RWMutex // protects currentOut and std config
 	currentOut io.Writer = os.Stderr
-	disabled   bool
+	disabled   atomic.Bool // perf: no RLock per log line
 )
 
 func init() {
@@ -36,12 +37,24 @@ func init() {
 	})
 	std.SetLevel(logrus.InfoLevel)
 
-	// Make Fatal testable / allow flush via ExitHandler
-	// Default ExitFunc = os.Exit; keep it, but register flush handler later if needed.
+	// Flush sentry on Fatal/Exit - prevents log loss
 	logrus.RegisterExitHandler(func() {
-		// Try flush sentry if initialized
-		sentry.Flush(2 * time.Second)
+		_ = sentry.Flush(2 * time.Second)
 	})
+}
+
+// New returns an isolated logger (non-global) for tests or per-component use.
+// Caller can configure via returned Logger's underlying *logrus.Logger via Standard() pattern
+// or use SetOutput/SetLevel on global only. This instance does not affect global std.
+func New() Logger {
+	l := logrus.New()
+	l.SetOutput(os.Stderr)
+	l.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp:   true,
+		TimestampFormat: time.RFC3339,
+	})
+	l.SetLevel(logrus.InfoLevel)
+	return newEntry(logrus.NewEntry(l))
 }
 
 // ---------------------------------------------------------------------
@@ -108,6 +121,8 @@ type Logger interface {
 	Fatalf(format string, args ...interface{})
 	Trace(args ...interface{})
 	Tracef(format string, args ...interface{})
+	Panic(args ...interface{})
+	Panicf(format string, args ...interface{})
 
 	// structured (production requirement)
 	WithField(key string, value interface{}) Logger
@@ -139,9 +154,7 @@ func newEntry(e *logrus.Entry) *entryWrapper {
 }
 
 func (l *entryWrapper) isOff() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	return disabled
+	return disabled.Load()
 }
 
 func (l *entryWrapper) Print(args ...interface{}) {
@@ -228,6 +241,18 @@ func (l *entryWrapper) Tracef(format string, args ...interface{}) {
 	}
 	l.e.Tracef(format, args...)
 }
+func (l *entryWrapper) Panic(args ...interface{}) {
+	if l.isOff() {
+		return
+	}
+	l.e.Panic(args...)
+}
+func (l *entryWrapper) Panicf(format string, args ...interface{}) {
+	if l.isOff() {
+		return
+	}
+	l.e.Panicf(format, args...)
+}
 
 func (l *entryWrapper) WithField(key string, value interface{}) Logger {
 	return newEntry(l.e.WithField(key, value))
@@ -265,7 +290,7 @@ func SetOutput(w io.Writer) {
 	mu.Lock()
 	defer mu.Unlock()
 	currentOut = w
-	if !disabled {
+	if !disabled.Load() {
 		std.SetOutput(w)
 	}
 }
@@ -275,14 +300,14 @@ func SetLevel(level Level) {
 	mu.Lock()
 	defer mu.Unlock()
 	if level == OFF {
-		if !disabled {
-			disabled = true
+		if !disabled.Load() {
+			disabled.Store(true)
 			std.SetOutput(io.Discard)
 		}
 		return
 	}
-	if disabled {
-		disabled = false
+	if disabled.Load() {
+		disabled.Store(false)
 		std.SetOutput(currentOut)
 	}
 	std.SetLevel(logrus.Level(level))
@@ -312,11 +337,9 @@ func SetReportCaller(enabled bool) {
 	std.SetReportCaller(enabled)
 }
 
-// isDisabled internal helper (R) for global functions
+// isDisabled internal helper for global functions (lock-free via atomic)
 func isDisabled() bool {
-	mu.RLock()
-	defer mu.RUnlock()
-	return disabled
+	return disabled.Load()
 }
 
 // ---------------------------------------------------------------------
@@ -407,6 +430,18 @@ func Tracef(format string, args ...interface{}) {
 	}
 	std.Tracef(format, args...)
 }
+func Panic(args ...interface{}) {
+	if isDisabled() {
+		return
+	}
+	std.Panic(args...)
+}
+func Panicf(format string, args ...interface{}) {
+	if isDisabled() {
+		return
+	}
+	std.Panicf(format, args...)
+}
 
 // AddHook thread-safe.
 func AddHook(h Hook) {
@@ -416,10 +451,16 @@ func AddHook(h Hook) {
 }
 
 // Standard returns underlying *logrus.Logger (escape hatch).
+// Pointer is immutable after init, so no lock needed. Caller must not replace it.
 func Standard() *logrus.Logger {
-	mu.RLock()
-	defer mu.RUnlock()
 	return std
+}
+
+// SetExitFunc allows overriding Fatal exit behavior for tests.
+func SetExitFunc(fn func(int)) {
+	mu.Lock()
+	defer mu.Unlock()
+	std.ExitFunc = fn
 }
 
 // ---------------------------------------------------------------------
@@ -453,12 +494,14 @@ func withContext(c Context) Logger {
 // ---------------------------------------------------------------------
 
 // NewSentryHook creates a sentry logrus hook using maintained sentry-go SDK.
-// Returns hook and ensures error is checked before use (fixes old nil deref bug).
+// Sends logs to Sentry Logs product. Returns error before use (fixes old nil deref bug).
 func NewSentryHook(dsn, environment, release string) (Hook, error) {
 	levels := []logrus.Level{
 		logrus.PanicLevel,
 		logrus.FatalLevel,
 		logrus.ErrorLevel,
+		logrus.WarnLevel,
+		logrus.InfoLevel,
 	}
 	hook, err := sentrylogrus.NewLogHook(levels, sentry.ClientOptions{
 		Dsn:              dsn,
@@ -472,9 +515,79 @@ func NewSentryHook(dsn, environment, release string) (Hook, error) {
 	return hook, nil
 }
 
-// AddSentryHook adds a sentry hook to standard logger, thread-safe.
+// NewSentryEventHook creates a hook that sends Error+ as Sentry Issues (events)
+// for teams that rely on Sentry Issues, not just Logs.
+func NewSentryEventHook(dsn, environment, release string) (Hook, error) {
+	if err := sentry.Init(sentry.ClientOptions{
+		Dsn:              dsn,
+		Environment:      environment,
+		Release:          release,
+		AttachStacktrace: true,
+	}); err != nil {
+		return nil, err
+	}
+	return &sentryEventHook{
+		levels: []logrus.Level{logrus.PanicLevel, logrus.FatalLevel, logrus.ErrorLevel},
+	}, nil
+}
+
+type sentryEventHook struct {
+	levels []logrus.Level
+}
+
+func (h *sentryEventHook) Levels() []logrus.Level { return h.levels }
+func (h *sentryEventHook) Fire(entry *logrus.Entry) error {
+	hub := sentry.GetHubFromContext(entry.Context)
+	if hub == nil {
+		hub = sentry.CurrentHub().Clone()
+	}
+	hub.WithScope(func(scope *sentry.Scope) {
+		scope.SetLevel(sentryLevel(entry.Level))
+		// Add fields as context (new SDK uses contexts/attributes instead of extras)
+		if len(entry.Data) > 0 {
+			ctx := make(map[string]interface{}, len(entry.Data))
+			for k, v := range entry.Data {
+				ctx[k] = v
+			}
+			scope.SetContext("logrus", ctx)
+		}
+		if errVal, ok := entry.Data[logrus.ErrorKey].(error); ok {
+			hub.CaptureException(errVal)
+		} else {
+			hub.CaptureMessage(entry.Message)
+		}
+	})
+	return nil
+}
+
+func sentryLevel(l logrus.Level) sentry.Level {
+	switch l {
+	case logrus.PanicLevel, logrus.FatalLevel:
+		return sentry.LevelFatal
+	case logrus.ErrorLevel:
+		return sentry.LevelError
+	case logrus.WarnLevel:
+		return sentry.LevelWarning
+	case logrus.InfoLevel:
+		return sentry.LevelInfo
+	default:
+		return sentry.LevelDebug
+	}
+}
+
+// AddSentryHook adds a sentry logs hook to standard logger, thread-safe.
 func AddSentryHook(dsn, environment, version string) error {
 	hook, err := NewSentryHook(dsn, environment, version)
+	if err != nil {
+		return err
+	}
+	AddHook(hook)
+	return nil
+}
+
+// AddSentryEventHook adds event hook (Issues) - for backward compat with old raven behavior.
+func AddSentryEventHook(dsn, environment, version string) error {
+	hook, err := NewSentryEventHook(dsn, environment, version)
 	if err != nil {
 		return err
 	}
@@ -487,10 +600,18 @@ func Flush(timeout time.Duration) bool {
 	return sentry.Flush(timeout)
 }
 
-// FlushWithContext flushes with context (newer Sentry API pattern via Hub).
+// FlushWithContext flushes with context, respects deadline.
 func FlushWithContext(ctx context.Context) bool {
+	timeout := 5 * time.Second
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining > 0 && remaining < timeout {
+			timeout = remaining
+		}
+	}
 	if hub := sentry.GetHubFromContext(ctx); hub != nil {
 		return hub.FlushWithContext(ctx)
 	}
-	return sentry.Flush(5 * time.Second)
+	// Fallback: flush global client with timeout derived from ctx
+	return sentry.Flush(timeout)
 }
