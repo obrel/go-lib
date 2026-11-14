@@ -15,21 +15,34 @@ func verbalizeTime(hourStr, minStr, secStr string, opts Options) string {
 
 	if opts.isID() {
 		hW := numToWordsID(h)
-		mW := numToWordsID(m)
-		if hasSec {
-			sW := numToWordsID(sec)
-			// e.g. 22:22:30 -> dua puluh dua dua puluh dua tiga puluh
-			return hW + " " + mW + " " + sW
+		// 10:00 -> sepuluh (per spec)
+		if m == 0 && (!hasSec || sec == 0) {
+			return hW
 		}
-		// 22:22 -> dua puluh dua dua puluh dua, or with jam prefix? keep simple
-		return hW + " " + mW
+		if m == 0 && hasSec && sec != 0 {
+			sW := numToWordsID(sec)
+			return hW + " lewat " + sW + " detik"
+		}
+		mW := numToWordsID(m)
+		if !hasSec || sec == 0 {
+			// 10:30 -> sepuluh lewat tiga puluh menit
+			return hW + " lewat " + mW + " menit"
+		}
+		// with seconds: 10:30:15 -> sepuluh lewat tiga puluh menit lima belas detik
+		sW := numToWordsID(sec)
+		return hW + " lewat " + mW + " menit " + sW + " detik"
 	}
 	// EN
 	hW := numToWordsEN(h)
-	mW := numToWordsEN(m)
-	if hasSec {
-		sW := numToWordsEN(sec)
-		return hW + " " + mW + " " + sW
+	if m == 0 && (!hasSec || sec == 0) {
+		return hW
 	}
-	return hW + " " + mW
+	mW := numToWordsEN(m)
+	if !hasSec || sec == 0 {
+		// keep simple: 22:22 -> twenty two twenty two
+		// but could also be "twenty two past twenty two" – keep space separated for backward compat
+		return hW + " " + mW
+	}
+	sW := numToWordsEN(sec)
+	return hW + " " + mW + " " + sW
 }

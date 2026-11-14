@@ -14,10 +14,11 @@ func TestNormalizeID(t *testing.T) {
 		// date YYYY-MM-DD
 		{"2024-01-15", "lima belas Januari dua ribu dua puluh empat", Options{Language: "id"}},
 		{"Tanggal 2024-12-31", "Tanggal tiga puluh satu Desember dua ribu dua puluh empat", Options{Language: "id"}},
-		// time
-		{"22:22", "dua puluh dua dua puluh dua", Options{Language: "id"}},
-		{"09:30", "sembilan tiga puluh", Options{Language: "id"}},
-		{"19:45:30", "sembilan belas empat puluh lima tiga puluh", Options{Language: "id"}},
+		// time - new spec: 10:30 -> sepuluh lewat tiga puluh menit, 10:00 -> sepuluh
+		{"22:22", "dua puluh dua lewat dua puluh dua menit", Options{Language: "id"}},
+		{"09:30", "sembilan lewat tiga puluh menit", Options{Language: "id"}},
+		{"10:00", "sepuluh", Options{Language: "id"}},
+		{"19:45:30", "sembilan belas lewat empat puluh lima menit tiga puluh detik", Options{Language: "id"}},
 		// abbr
 		{"WIB", "W I B", Options{Language: "id"}},
 		{"GMT dan UTC", "G M T dan U T C", Options{Language: "id"}},
@@ -32,8 +33,9 @@ func TestNormalizeID(t *testing.T) {
 		{"example.co.id", "example dot co dot id", Options{Language: "id"}},
 		// combined
 		{"Beli 2 apel di https://toko.com pada 2024-01-15 jam 10:30 hubungi a@gmail.com WIB",
-			"Beli dua apel di toko dot com pada lima belas Januari dua ribu dua puluh empat jam sepuluh tiga puluh hubungi a at gmail dot com W I B",
+			"Beli dua apel di toko dot com pada lima belas Januari dua ribu dua puluh empat jam sepuluh lewat tiga puluh menit hubungi a at gmail dot com W I B",
 			Options{Language: "id"}},
+		{"Jam 10:00 WIB", "Jam sepuluh W I B", Options{Language: "id"}},
 		// number mode none should not convert
 		{"1.000", "1.000", Options{Language: "id", NumberMode: "none"}},
 	}
