@@ -68,9 +68,14 @@ type Record struct {
 	SessionID string `json:"session_id,omitempty"`
 	OpaqueID  string `json:"opaque_id,omitempty"`
 
+	// Common timing breakdown (helps explain high duration_ms)
+	IdleMs            float64 `json:"idle_ms,omitempty"`             // conn start -> session start
+	SessionDurationMs float64 `json:"session_duration_ms,omitempty"` // session start -> connection close
+
 	// STT fields
-	TTFPMs        float64 `json:"ttfp_ms,omitempty"`
-	FirstFinalMs  float64 `json:"first_final_ms,omitempty"`
+	TTFPMs        float64 `json:"ttfp_ms,omitempty"`         // now: first audio -> first partial (was conn -> partial)
+	FirstFinalMs  float64 `json:"first_final_ms,omitempty"`  // first audio -> first final
+	FirstAudioMs  float64 `json:"first_audio_ms,omitempty"`  // session start -> first audio frame
 	Partials      int     `json:"partials_emitted,omitempty"`
 	Finals        int     `json:"finals_emitted,omitempty"`
 	DecodeMsP50   float64 `json:"decode_ms_p50,omitempty"`
@@ -80,12 +85,13 @@ type Record struct {
 	AudioBytes    int64   `json:"audio_bytes,omitempty"`
 
 	// TTS fields
-	TTFAMs            float64 `json:"ttfa_ms,omitempty"`
-	TTFAMeanMs        float64 `json:"ttfa_ms_mean,omitempty"`
+	TTFAMs            float64 `json:"ttfa_ms,omitempty"`       // first synthesize -> first audio chunk
+	TTFAMeanMs        float64 `json:"ttfa_ms_mean,omitempty"`  // deprecated, not used
 	SynthMsTotal      float64 `json:"synth_ms_total,omitempty"`
 	Segments          int     `json:"segments,omitempty"`
 	CancelledSegments int     `json:"cancelled_segments,omitempty"`
 	CharsTotal        int     `json:"chars_total,omitempty"`
+	QueueWaitMs       float64 `json:"queue_wait_ms,omitempty"` // time job waited in worker queue
 }
 
 const eventName = "request"

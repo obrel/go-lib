@@ -18,17 +18,19 @@ import (
 const capSamples = 512
 
 type Accumulator struct {
-	mu        sync.Mutex
-	decodeMs  []float64
-	decodeSum float64
-	calls     int64
-	rtfSum    float64
-	rtfCalls  int64
-	synthMs   []float64
-	synthSum  float64
-	synthN    int64
-	chars     int64
-	cancelled int64
+	mu           sync.Mutex
+	decodeMs   []float64
+	decodeSum  float64
+	calls        int64
+	rtfSum       float64
+	rtfCalls     int64
+	synthMs      []float64
+	synthSum     float64
+	synthN       int64
+	chars        int64
+	cancelled    int64
+	queueWaitMs  []float64
+	queueWaitSum float64
 }
 
 type Snapshot struct {
@@ -43,6 +45,11 @@ type Snapshot struct {
 	SynthCalls   int64
 	Chars        int64
 	Cancelled    int64
+
+	QueueWaitP50   float64
+	QueueWaitP95   float64
+	QueueWaitTotal float64
+	QueueWaitMean  float64
 }
 
 // ObserveDecode records one decode call: ms is wall time, rtf = decode time / audio seconds.
@@ -75,6 +82,17 @@ func (a *Accumulator) ObserveSynth(ms float64, chars int, cancelled bool) {
 	}
 }
 
+// ObserveQueueWait records time a job waited in queue before processing.
+func (a *Accumulator) ObserveQueueWait(ms float64) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.queueWaitMs = appendCapped(a.queueWaitMs, ms)
+	a.queueWaitSum += ms
+}
+
 func appendCapped(dst []float64, v float64) []float64 {
 	if len(dst) >= capSamples {
 		copy(dst, dst[1:])
@@ -92,8 +110,10 @@ func (a *Accumulator) Snapshot() Snapshot {
 	synthN := a.synthN
 	chars := a.chars
 	cancelled := a.cancelled
+	queueWaitSum := a.queueWaitSum
 	decodeCopy := append([]float64(nil), a.decodeMs...)
 	synthCopy := append([]float64(nil), a.synthMs...)
+	queueCopy := append([]float64(nil), a.queueWaitMs...)
 	a.mu.Unlock()
 
 	var s Snapshot
@@ -109,6 +129,12 @@ func (a *Accumulator) Snapshot() Snapshot {
 	s.SynthCalls = synthN
 	s.Chars = chars
 	s.Cancelled = cancelled
+	s.QueueWaitP50 = percentile(queueCopy, 50)
+	s.QueueWaitP95 = percentile(queueCopy, 95)
+	s.QueueWaitTotal = queueWaitSum
+	if len(queueCopy) > 0 {
+		s.QueueWaitMean = queueWaitSum / float64(len(queueCopy))
+	}
 	return s
 }
 
