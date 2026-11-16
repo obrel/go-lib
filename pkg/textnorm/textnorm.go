@@ -6,7 +6,7 @@ import (
 )
 
 type Options struct {
-	Language   string // "id" or "en", default "id"
+	Language   string // only "id" supported, other langs passthrough as-is, default "id"
 	NumberMode string // auto|currency|digit|none, default auto
 }
 
@@ -53,6 +53,10 @@ var (
 func Normalize(text string, opts Options) string {
 	if text == "" {
 		return ""
+	}
+	// Only Indonesian is supported for now; other languages passthrough as-is.
+	if !opts.isID() {
+		return text
 	}
 	// email first
 	text = reEmail.ReplaceAllStringFunc(text, func(m string) string {

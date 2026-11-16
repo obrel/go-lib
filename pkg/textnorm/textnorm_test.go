@@ -48,20 +48,24 @@ func TestNormalizeID(t *testing.T) {
 }
 
 func TestNormalizeEN(t *testing.T) {
+	// Only id is supported; other languages should passthrough as-is
 	tests := []struct {
 		in, want string
 		opts     Options
 	}{
-		{"2024-01-15", "January fifteen two thousand twenty four", Options{Language: "en"}},
-		{"22:22", "twenty two twenty two", Options{Language: "en"}},
-		{"a@gmail.com", "a at gmail dot com", Options{Language: "en"}},
-		{"https://google.com", "google dot com", Options{Language: "en"}},
-		{"NASA", "N A S A", Options{Language: "en"}},
+		{"2024-01-15", "2024-01-15", Options{Language: "en"}},
+		{"22:22", "22:22", Options{Language: "en"}},
+		{"a@gmail.com", "a@gmail.com", Options{Language: "en"}},
+		{"https://google.com", "https://google.com", Options{Language: "en"}},
+		{"NASA", "NASA", Options{Language: "en"}},
+		{"Bonjour 123", "Bonjour 123", Options{Language: "fr"}},
+		{"Hallo 456", "Hallo 456", Options{Language: "de"}},
+		{"Pay 1.500", "Pay 1.500", Options{Language: "en-US"}},
 	}
 	for _, tt := range tests {
 		got := Normalize(tt.in, tt.opts)
 		if got != tt.want {
-			t.Errorf("Normalize EN %q = %q, want %q", tt.in, got, tt.want)
+			t.Errorf("Normalize non-id %q lang=%q = %q, want %q", tt.in, tt.opts.Language, got, tt.want)
 		}
 	}
 }
